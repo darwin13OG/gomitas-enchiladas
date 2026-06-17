@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gomitas Enchiladas | Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { background-color: #050505; color: #eee; font-family: 'Inter', sans-serif; overflow-x: hidden; }
+        [v-cloak] { display: none; }
+        .glass { background: rgba(15, 15, 15, 0.85); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
+        #map { height: 260px; border-radius: 24px; border: 1px solid #222; margin-top: 12px; z-index: 10; }
+        .btn-active { background: #f97316 !important; color: white !important; box-shadow: 0 0 20px rgba(249, 115, 22, 0.3); border-color: #fb923c !important; }
+        .no-select { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; user-select: none; }
+        .pop-in { animation: pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        @keyframes pop { 0% { opacity: 0; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1); } }
+    </style>
+</head>
+<body>
+    <div id="app" v-cloak>
+        
+        <!-- VISTA CLIENTE -->
+        <div v-if="!isAdminView" class="max-w-md mx-auto p-5 pb-12 space-y-6">
+            <header class="text-center py-8 no-select" @click="contarClicks">
+                <h1 class="text-4xl font-[900] italic tracking-tighter text-white leading-none">GOMITAS <span class="text-orange-500">ENCHILADAS</span></h1>
+                <p class="text-[9px] uppercase tracking-[0.4em] text-zinc-600 mt-2 font-bold">Encargos • Lunes a Viernes</p>
+            </header>
+
+            <div class="glass p-7 rounded-[3rem] space-y-8">
+                <section>
+                    <label class="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-4 block">1. Cantidad de gomitas</label>
+                    <div class="flex items-center justify-between bg-zinc-900/50 p-2 rounded-2xl border border-white/5 no-select">
+                        <button @click="pedido.cantidad = Math.max(1, pedido.cantidad - 1)" class="w-16 h-16 text-3xl font-bold text-orange-500">－</button>
+                        <span class="text-5xl font-black text-white leading-none">{{ pedido.cantidad }}</span>
+                        <button @click="pedido.cantidad++" class="w-16 h-16 text-3xl font-bold text-orange-500">＋</button>
+                    </div>
+                </section>
+
+                <section>
+                    <label class="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-4 block">2. Toppings</label>
+                    <div class="grid grid-cols-1 gap-2">
+                        <button v-for="(precio, t) in toppingsPrice" @click="toggleTopping(t)" 
+                            :class="pedido.toppings.includes(t) ? 'btn-active' : ''"
+                            class="flex justify-between items-center p-5 rounded-2xl bg-zinc-900/40 border border-white/5 text-zinc-400 font-bold text-xs transition-all active:scale-[0.98] no-select text-left">
+                            <span>{{ t }}</span> <span>+ ${{ precio }}</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section>
+                    <label class="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 block text-center">3. Tu casa (Mueve el Pin 📍)</label>
+                    <div id="map"></div>
+                    <input v-model="pedido.direccion" type="text" placeholder="Barrio o referencia (Ej: Rejas negras)" class="w-full bg-zinc-900/60 p-5 rounded-2xl mt-4 border border-white/5 outline-none focus:border-orange-500 text-sm">
+                </section>
+
+                <input v-model="pedido.cliente" type="text" placeholder="Tu Nombre Completo" class="w-full bg-zinc-900/60 p-5 rounded-2xl border border-white/5 outline-none focus:border-orange-500 font-bold">
+
+                <div class="flex justify-between items-center px-2">
+                    <span class="text-xs font-black text-zinc-500 uppercase">Total:</span>
+                    <span class="text-4xl font-[900] text-white tracking-tighter">${{ totalActual }}</span>
+                </div>
+
+                <button @click="enviarPedido" :disabled="loading" class="w-full py-6 bg-orange-600 text-white font-black rounded-[2.5rem] uppercase text-xs tracking-[0.2em] shadow-lg active:scale-95 transition-all">
+                    {{ loading ? 'ENVIANDO...' : 'CONFIRMAR ENCARGO' }}
+                </button>
+            </div>
+        </div>
+
+        <!-- VISTA ADMIN -->
+        <div v-if="isAdminView" class="max-w-md mx-auto p-5 space-y-6">
+            <div class="flex justify-between items-center py-4 no-select">
+                <h2 class="text-2xl font-[900] text-orange-500 italic uppercase">Gestión</h2>
+                <button @click="isAdminView = false" class="text-zinc-600 font-bold text-xs">CERRAR</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+                <button @click="modals.manual = true" class="py-4 bg-zinc-900 border border-orange-500/20 text-orange-500 rounded-2xl font-black text-[9px] uppercase tracking-tighter">+ Manual</button>
+                <button @click="modals.confirmReset = true" class="py-4 bg-zinc-900 border border-white/5 text-zinc-500 rounded-2xl font-black text-[9px] uppercase tracking-tighter">Limpiar Entregas</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-zinc-900 border border-white/5 p-5 rounded-3xl text-center">
+                    <p class="text-[8px] font-black text-zinc-600 uppercase mb-1">Caja Total</p>
+                    <p class="text-2xl font-black text-white">${{ totalCaja.toLocaleString() }}</p>
+                </div>
+                <div class="bg-zinc-900 border border-emerald-500/20 p-5 rounded-3xl text-center">
+                    <p class="text-[8px] font-black text-emerald-600 uppercase mb-1">Ganancia Real</p>
+                    <p class="text-2xl font-black text-emerald-400">${{ gananciaTotal.toLocaleString() }}</p>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div v-for="p in pedidos" :key="p.id" class="glass p-6 rounded-[2.5rem] flex justify-between items-center">
+                    <div class="flex-1">
+                        <h3 class="font-black text-white text-sm uppercase leading-none italic">{{ p.cliente }}</h3>
+                        <p class="text-[10px] text-zinc-500 font-bold mt-2 uppercase">{{ p.direccion_manual }}</p>
+                        <p class="text-[10px] text-orange-500 font-black mt-1 uppercase">{{ p.cantidad }} Goms • {{ p.toppings }}</p>
+                    </div>
+                    <div class="text-right ml-4">
+                        <p class="text-xl font-black text-white mb-3">${{ p.total.toLocaleString() }}</p>
+                        <div class="flex gap-2">
+                            <button v-if="p.coords" @click="verMapa(p.coords)" class="w-12 h-12 bg-zinc-800 text-white rounded-2xl flex items-center justify-center text-xl">📍</button>
+                            <button @click="abrirConfirmarEntrega(p)" class="w-12 h-12 bg-emerald-600 text-white rounded-2xl flex items-center justify-center text-xl">✓</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div @click="modals.config = true" class="py-10 text-center opacity-20 text-[9px] font-bold uppercase tracking-[0.5em] no-select">Ajustes de Costos</div>
+        </div>
+
+        <!-- MODAL PEDIDO MANUAL -->
+        <div v-if="modals.manual" class="fixed inset-0 z-[150] bg-black/95 p-6 flex items-center justify-center backdrop-blur-md">
+            <div class="glass p-8 rounded-[3rem] w-full max-w-sm space-y-4 pop-in">
+                <h3 class="text-sm font-black text-orange-500 uppercase text-center italic">Anotar Pedido (WhatsApp)</h3>
+                <input v-model="manualForm.cliente" type="text" placeholder="Nombre del cliente" class="w-full bg-zinc-900 p-4 rounded-xl text-xs font-bold border border-white/5 outline-none">
+                <input v-model="manualForm.direccion" type="text" placeholder="Dirección / Barrio" class="w-full bg-zinc-900 p-4 rounded-xl text-xs font-bold border border-white/5 outline-none">
+                <div class="grid grid-cols-2 gap-2">
+                    <input v-model.number="manualForm.cantidad" type="number" placeholder="Cant. Gomitas" class="bg-zinc-900 p-4 rounded-xl text-xs font-bold border border-white/5 outline-none">
+                    <input v-model.number="manualForm.total" type="number" placeholder="Precio Final" class="bg-zinc-900 p-4 rounded-xl text-xs font-bold border border-white/5 outline-none">
+                </div>
+                <button @click="guardarPedidoManual" :disabled="loading" class="w-full py-4 bg-orange-600 text-white rounded-xl font-black text-xs uppercase shadow-lg">{{ loading ? 'Guardando...' : 'Confirmar' }}</button>
+                <button @click="modals.manual = false" class="w-full text-[9px] font-bold text-zinc-700 uppercase">Cerrar</button>
+            </div>
+        </div>
+
+        <!-- MODAL CONFIRMAR RESET SEMANA (SIN GOOGLE) -->
+        <div v-if="modals.confirmReset" class="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center p-6 text-center backdrop-blur-md">
+            <div class="glass p-10 rounded-[3.5rem] space-y-6 max-w-xs w-full pop-in">
+                <div class="text-5xl">🗓️</div>
+                <h2 class="text-xl font-black text-white uppercase italic leading-tight">¿Cerrar Semana?</h2>
+                <p class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Se borrarán los pedidos entregados. Los pendientes se quedarán.</p>
+                <div class="flex flex-col gap-2">
+                    <button @click="ejecutarResetSemana" class="w-full py-4 bg-orange-600 rounded-2xl font-black text-xs uppercase shadow-xl">Sí, Limpiar</button>
+                    <button @click="modals.confirmReset = false" class="w-full py-2 text-[9px] font-bold text-zinc-700 uppercase">Cancelar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL CONFIRMAR ENTREGA (SIN GOOGLE) -->
+        <div v-if="modals.confirmEntrega" class="fixed inset-0 z-[200] bg-black/95 flex items-center justify-center p-6 text-center backdrop-blur-md">
+            <div class="glass p-10 rounded-[3.5rem] space-y-6 max-w-xs w-full pop-in">
+                <div class="text-5xl text-emerald-500">💰</div>
+                <h2 class="text-xl font-black text-white uppercase italic leading-tight">¿Entregado?</h2>
+                <p class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Confirmas que recibiste el dinero de {{ selectedPedido?.cliente }}</p>
+                <div class="flex flex-col gap-2">
+                    <button @click="ejecutarEntrega" class="w-full py-4 bg-emerald-600 rounded-2xl font-black text-xs uppercase shadow-xl">Confirmar Pago</button>
+                    <button @click="modals.confirmEntrega = false" class="w-full py-2 text-[9px] font-bold text-zinc-700 uppercase">Cerrar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL ALERTAS -->
+        <div v-if="modal.show" class="fixed inset-0 z-[300] bg-black/95 flex items-center justify-center p-6 text-center backdrop-blur-lg">
+            <div class="glass p-10 rounded-[3.5rem] space-y-6 max-w-xs w-full pop-in">
+                <div :class="modal.type === 'success' ? 'text-emerald-500' : 'text-orange-500'" class="text-5xl">●</div>
+                <h2 class="text-2xl font-black text-white uppercase italic leading-tight">{{ modal.title }}</h2>
+                <p class="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{{ modal.msg }}</p>
+                <button @click="modal.show = false" :class="modal.type === 'success' ? 'bg-emerald-600' : 'bg-orange-600'" class="w-full py-5 rounded-2xl font-black text-xs uppercase shadow-xl">OK</button>
+            </div>
+        </div>
+
+        <!-- MODAL CLAVE -->
+        <div v-if="showPass" class="fixed inset-0 z-[150] bg-black/95 flex items-center justify-center p-6">
+            <div class="glass p-10 rounded-[3.5rem] w-full max-w-xs text-center space-y-6 pop-in no-select">
+                <h3 class="text-xl font-black text-white uppercase italic tracking-tighter">Administración</h3>
+                <input v-model="passInput" type="password" placeholder="••••" class="w-full bg-zinc-900 p-5 rounded-2xl text-center border border-white/5 text-2xl tracking-[0.5em] outline-none">
+                <button @click="verificarPass" class="w-full py-4 bg-orange-600 rounded-2xl font-black uppercase text-xs">Entrar</button>
+                <button @click="showPass = false" class="text-[10px] font-bold text-zinc-700 uppercase mt-2">Cerrar</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted } = Vue;
+        const sb = supabase.createClient("https://anhoncimcwqzektwfrba.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFuaG9uY2ltY3dxemVrdHdmcmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5NTk2MDgsImV4cCI6MjA5NjUzNTYwOH0.WBJ-VL-exooaKog_-MFCvpiYL9-4Rd3kHgqI3_GFlpI");
+
+        createApp({
+            setup() {
+                const isAdminView = ref(false); const showPass = ref(false); const loading = ref(false);
+                const passInput = ref(''); const clickCount = ref(0); const map = ref(null); const marker = ref(null);
+                
+                const toppingsPrice = { 'Limón': 500, 'Chamoy': 1000, 'Tajín': 1000 };
+                const toppingsCost = { 'Limón': 300, 'Chamoy': 600, 'Tajín': 600 };
+                const valorVentaGomita = 500;
+                
+                const config = ref({ costoPaquete: 12000, unidadesPaquete: 40 });
+                const pedido = ref({ cliente: '', direccion: '', cantidad: 10, toppings: [], coords: '' });
+                const manualForm = ref({ cliente: '', direccion: '', cantidad: 10, total: 0 });
+                const pedidos = ref([]); const modal = ref({ show: false, title: '', msg: '', type: 'success' });
+                const modals = ref({ manual: false, config: false, confirmReset: false, confirmEntrega: false });
+                const selectedPedido = ref(null);
+
+                const costoUnitarioGomita = computed(() => config.value.costoPaquete / config.value.unidadesPaquete);
+
+                const totalActual = computed(() => {
+                    let t = pedido.value.cantidad * valorVentaGomita;
+                    pedido.value.toppings.forEach(top => t += toppingsPrice[top]);
+                    return t;
+                });
+
+                const totalCaja = computed(() => pedidos.value.reduce((acc, p) => acc + p.total, 0));
+
+                const gananciaTotal = computed(() => {
+                    return pedidos.value.reduce((acc, p) => {
+                        let gananciaGoms = p.cantidad * (valorVentaGomita - costoUnitarioGomita.value);
+                        let gananciaTops = 0;
+                        if(p.toppings && p.toppings !== 'MANUAL') {
+                            const lista = p.toppings.split(', ');
+                            lista.forEach(t => { if(toppingsPrice[t]) gananciaTops += (toppingsPrice[t] - toppingsCost[t]); });
+                        }
+                        return acc + gananciaGoms + gananciaTops;
+                    }, 0);
+                });
+
+                onMounted(() => { initMap(); });
+
+                const initMap = () => {
+                    map.value = L.map('map', { attributionControl: false }).setView([4.5709, -74.2973], 13);
+                    L.tileLayer('https://{s}.tile.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map.value);
+                    marker.value = L.marker(map.value.getCenter(), { draggable: true }).addTo(map.value);
+                    const updateCoords = () => { const pos = marker.value.getLatLng(); pedido.value.coords = `${pos.lat},${pos.lng}`; };
+                    map.value.on('move', () => { marker.value.setLatLng(map.value.getCenter()); updateCoords(); });
+                    map.value.locate({setView: true, maxZoom: 16});
+                    map.value.on('locationfound', (e) => { marker.value.setLatLng(e.latlng); updateCoords(); });
+                };
+
+                const toggleTopping = (t) => {
+                    const idx = pedido.value.toppings.indexOf(t);
+                    if(idx > -1) pedido.value.toppings.splice(idx, 1);
+                    else pedido.value.toppings.push(t);
+                };
+
+                const myAlert = (title, msg, type = 'success') => { modal.value = { show: true, title, msg, type }; };
+
+                const enviarPedido = async () => {
+                    if(!pedido.value.cliente) return myAlert("¡Error!", "Escribe el nombre.", "error");
+                    loading.value = true;
+                    const { error } = await sb.from('pedidos_gomitas').insert([{
+                        cliente: pedido.value.cliente.toUpperCase(),
+                        direccion_manual: pedido.value.direccion.toUpperCase(),
+                        coords: pedido.value.coords,
+                        cantidad: pedido.value.cantidad,
+                        toppings: pedido.value.toppings.join(', '),
+                        total: totalActual.value
+                    }]);
+                    loading.value = false;
+                    if(!error) { 
+                        myAlert("¡LISTO!", "Encargo registrado.", "success"); 
+                        pedido.value = { cliente: '', direccion: '', cantidad: 10, toppings: [], coords: pedido.value.coords }; 
+                    }
+                };
+
+                const guardarPedidoManual = async () => {
+                    if(!manualForm.value.cliente || !manualForm.value.total) return;
+                    loading.value = true;
+                    const { error } = await sb.from('pedidos_gomitas').insert([{
+                        cliente: manualForm.value.cliente.toUpperCase(),
+                        direccion_manual: manualForm.value.direccion.toUpperCase(),
+                        cantidad: manualForm.value.cantidad,
+                        total: manualForm.value.total,
+                        toppings: 'MANUAL',
+                        estado: 'pendiente'
+                    }]);
+                    loading.value = false;
+                    if(!error) {
+                        modals.value.manual = false;
+                        manualForm.value = { cliente: '', direccion: '', cantidad: 10, total: 0 };
+                        fetchPedidos();
+                        myAlert("OK", "Pedido manual guardado.");
+                    }
+                };
+
+                const contarClicks = () => {
+                    clickCount.value++;
+                    if(clickCount.value === 3) { showPass.value = true; clickCount.value = 0; }
+                    setTimeout(() => clickCount.value = 0, 2000);
+                };
+
+                const verificarPass = () => {
+                    if(passInput.value === '123') { 
+                        showPass.value = false; isAdminView.value = true; fetchPedidos();
+                        sb.channel('gomis').on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos_gomitas' }, () => fetchPedidos()).subscribe();
+                    } else { myAlert("¡NO!", "Clave incorrecta.", "error"); }
+                    passInput.value = '';
+                };
+
+                const fetchPedidos = async () => {
+                    const { data } = await sb.from('pedidos_gomitas').select('*').eq('estado', 'pendiente').order('id', {ascending: false});
+                    if(data) pedidos.value = data;
+                };
+
+                const abrirConfirmarEntrega = (p) => { selectedPedido.value = p; modals.value.confirmEntrega = true; };
+
+                const ejecutarEntrega = async () => {
+                    const { error } = await sb.from('pedidos_gomitas').update({ estado: 'entregado' }).eq('id', selectedPedido.value.id);
+                    modals.value.confirmEntrega = false;
+                    if(!error) { fetchPedidos(); myAlert("¡LISTO!", "Cobro realizado."); }
+                };
+
+                const ejecutarResetSemana = async () => {
+                    const { error } = await sb.from('pedidos_gomitas').delete().eq('estado', 'entregado');
+                    modals.value.confirmReset = false;
+                    if(!error) { fetchPedidos(); myAlert("LIMPIO", "Se eliminaron las entregas."); }
+                };
+
+                const verMapa = (coords) => { window.open(`https://www.google.com/maps/search/?api=1&query=${coords}`); };
+
+                return { isAdminView, showPass, loading, pedido, manualForm, toppingsPrice, totalActual, totalCaja, gananciaTotal, pedidos, modal, modals, config, selectedPedido, toggleTopping, enviarPedido, guardarPedidoManual, contarClicks, verificarPass, passInput, verMapa, abrirConfirmarEntrega, ejecutarEntrega, ejecutarResetSemana };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
